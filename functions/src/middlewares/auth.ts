@@ -3,7 +3,7 @@ import * as dotenv from 'dotenv';
 
 dotenv.config();
 
-export const authWare = (req: any, res: any, next: any) => {
+export const auth = (req: any, res: any, next: any) => {
   const authHeader = req.headers['authorization'];
 
   if (!authHeader) {

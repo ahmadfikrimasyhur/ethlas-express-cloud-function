@@ -2,16 +2,17 @@ import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import * as express from 'express';
 import * as cors from 'cors';
-import { v4 as uuidv4 } from 'uuid';
-import { comparePassword, hashPassword } from './libs/bcrypt';
+import { comparePassword, hashPassword, humanDate } from './libs/helpers';
 import { builder } from './types/builder';
 import * as fs from 'fs';
 import * as jwt from 'jsonwebtoken';
 import * as dotenv from 'dotenv';
-import { authWare } from './middlewares/auth';
+import { auth } from './middlewares/auth';
+// import * as multer from 'multer';
+// import * as bodyParser from 'body-parser';
 
 const serviceAccount = JSON.parse(
-  fs.readFileSync('./services-account.json', 'utf-8')
+  fs.readFileSync('./service-account.json', 'utf-8')
 );
 
 admin.initializeApp({
@@ -22,184 +23,377 @@ const firestoreDB = admin.firestore();
 const app = express();
 
 app.use(cors({ origin: true }));
+// app.use(bodyParser.json());
+// app.use(bodyParser.urlencoded({ extended: true }));
+// app.use(express.static('public'));
 
 dotenv.config();
 
 // Routes
 // Home
 app.get('/', (req, res) => {
-  return res.status(200).send('Welcome to Ethlas Builder!');
+  // Send response to client
+  res.status(200).send('Welcome to Ethlas Builder!');
 });
 
-// Create Builder
-app.post('/builders/create', (req, res) => {
+// Register builder
+app.post('/register', (req, res) => {
   (async () => {
     try {
-      const uuid = uuidv4();
+      // Set builder data
       const builder: builder = {
-        uuid: uuid,
         email: req.body.email,
         full_name: req.body.full_name,
         join_date: Date.now(),
         password: await hashPassword(req.body.password),
       };
 
-      await firestoreDB.collection('builders').doc(`/${uuid}`).create(builder);
+      // Push the new builder into firestore
+      const newBuilder = await firestoreDB.collection('builders').add(builder);
+      if (!newBuilder) {
+        // Send log
+        console.log('Register builder failed');
 
-      return res.status(200).send({ status: true, msg: 'Create successed.' });
+        // Send response to client
+        res
+          .status(500)
+          .send({ status: false, message: 'Register builder failed' });
+      }
+
+      const jwtToken: string = process.env.JWT_TOKEN_KEY;
+      const token = jwt.sign(req.body.email, jwtToken);
+      builder.id = newBuilder.id;
+      builder.join_date_human = humanDate(builder?.join_date);
+      builder.token = token;
+      builder.join_date = undefined;
+      builder.password = undefined;
+
+      // Send response to client
+      res.status(200).send({
+        status: true,
+        data: builder,
+        message: `Register successed. Builder id: ${newBuilder.id}`,
+      });
     } catch (error) {
+      // Send log
       console.log(error);
 
-      return res.status(500).send({ status: false, msg: 'Create failed.' });
+      // Send response to client
+      res
+        .status(500)
+        .send({ status: false, message: 'Register builder failed' });
     }
   })();
 });
 
-// Login by Email & Password
-app.post('/builders/login', (req, res) => {
+// Login Builder by email and password
+app.post('/login', (req, res) => {
   (async () => {
     try {
-      const reqDoc = firestoreDB
+      // Get builder by email
+      const getBuilder = firestoreDB
         .collection('builders')
         .where('email', '==', req.body.email)
-        .limit(1);
-      let builderHashPassword = '';
+        .limit(1)
+        .get();
 
-      await reqDoc.get().then((querySnapshot) => {
-        querySnapshot.forEach((doc) => {
-          builderHashPassword = doc.data()!.password;
-        });
-      });
+      // Check Builder exists
+      if ((await getBuilder).empty) {
+        // Send response to client
+        res.status(401).send({ status: false, message: 'Email not found' });
+      }
 
+      // Get builder data
+      const getBuilderDoc = (await getBuilder).docs.at(0);
+      const getBuilderData = getBuilderDoc!.data();
+
+      // Get builder hashed password
+      let builderHashPassword = getBuilderData!.password;
+
+      // Compare password
       const isPasswordValid = await comparePassword(
         req.body.password,
         builderHashPassword
       );
 
-      const jwtToken: string = process.env.JWT_TOKEN_KEY;
-      if (isPasswordValid) {
-        const token = jwt.sign(req.body.email, jwtToken);
-
-        return res.status(200).send({ status: true, data: token });
+      // Check password
+      if (!isPasswordValid) {
+        // Send response to client
+        res.status(401).send({ status: false, message: 'Password not valid' });
       }
 
-      return res.status(401).send({ status: false, msg: 'Not authorized.' });
-    } catch (error) {
-      console.log(error);
+      // Generate JWT Token.
+      const jwtToken: string = process.env.JWT_TOKEN_KEY;
+      const token = jwt.sign(req.body.email, jwtToken);
 
-      return res.status(500).send({ status: false, msg: error });
-    }
-  })();
-});
-
-// Get Builder by UUID
-app.get('/builders/:uuid', (req, res) => {
-  (async () => {
-    try {
-      const reqDoc = firestoreDB.collection('builders').doc(req.params.uuid);
-      const getDoc = await reqDoc.get();
-      const doc = getDoc.data();
       const builder: builder = {
-        uuid: doc!.uuid,
-        email: doc!.email,
-        full_name: doc!.full_name,
-        join_date: doc!.join_date,
+        id: getBuilderDoc!.id,
+        full_name: getBuilderData.full_name,
+        email: getBuilderData.email,
+        join_date_human: humanDate(getBuilderData.join_date),
+        token: token,
       };
 
-      return res.status(200).send({ status: true, data: builder });
+      // Send response to client
+      res.status(200).send({ status: true, data: builder });
     } catch (error) {
+      // Send log
       console.log(error);
 
-      return res.status(500).send({ status: false, msg: error });
+      // Send response to client
+      res.status(500).send({ status: false, message: 'Login failed' });
     }
   })();
 });
 
-// Get All Builders
-app.get('/builders', (req, res) => {
+// Get builder profile by id
+app.get('/profile/:id', (req, res) => {
   (async () => {
     try {
-      const reqCollection = firestoreDB
+      // Get builder by id
+      const getBuilder = await firestoreDB
+        .collection('builders')
+        .doc(req.params.id)
+        .get();
+
+      // Check builder exists
+      if (!getBuilder.exists) {
+        // Send response to client
+        res
+          .status(401)
+          .send({ status: false, message: 'Builder id not found' });
+      }
+
+      // Set data builder
+      const builderData = getBuilder.data();
+      const builder: builder = {
+        id: getBuilder.id,
+        email: builderData!.email,
+        full_name: builderData!.full_name,
+        join_date_human: humanDate(builderData!.join_date),
+      };
+
+      // Send response to client
+      res.status(200).send({ status: true, data: builder });
+    } catch (error) {
+      // Send log
+      console.log(error);
+
+      // Send response to client
+      res
+        .status(500)
+        .send({ status: false, message: 'Get builder profile failed' });
+    }
+  })();
+});
+
+// Get latest 10 builders
+app.get('/list', (req, res) => {
+  (async () => {
+    try {
+      // Get List Builder limit 10 latest order
+      const getListBuilder = firestoreDB
         .collection('builders')
         .limit(10)
-        .orderBy('join_date', 'desc');
-      const responses: any = [];
+        .orderBy('join_date', 'desc')
+        .get();
 
-      await reqCollection.get().then((data) => {
+      // Set list data builder
+      const listBuilder: builder[] = [];
+      await getListBuilder.then((data) => {
         const docs = data.docs;
-
         docs.map((doc) => {
           const builder: builder = {
-            uuid: doc.data().uuid,
+            id: doc.id,
             email: doc.data().email,
             full_name: doc.data().full_name,
-            join_date: doc.data().join_date,
+            join_date_human: humanDate(doc.data().join_date),
           };
 
-          responses.push(builder);
+          listBuilder.push(builder);
         });
 
-        return responses;
+        listBuilder;
       });
 
-      return res.status(200).send({ status: true, data: responses });
+      // Send response to client
+      res.status(200).send({ status: true, data: listBuilder });
     } catch (error) {
+      // Send log
       console.log(error);
 
-      return res
+      // Send response to client
+      res
         .status(500)
-        .send({ status: false, msg: 'Get Builders data failed.' });
+        .send({ status: false, message: 'Get latets 10 builders failed' });
     }
   })();
 });
 
-// Update Builder
-app.put('/builders/update/:uuid', authWare, (req, res) => {
+// Update builder
+app.post(
+  '/update/:id',
+  [auth /*, multer().single('file_photo')*/],
+  (req: any, res: any) => {
+    (async () => {
+      try {
+        // console.log(req.body);
+        // console.log(req.file);
+        // res.status(401).send({
+        //   status: false,
+        //   data: req.body,
+        //   message: 'Current Password can`t be empty',
+        // });
+        // Check password
+        if (!req.body.current_password) {
+          // Send response to client
+          res.status(401).send({
+            status: false,
+            message: 'Current Password can`t be empty',
+          });
+        }
+
+        if (
+          (req.body.password || req.body.confirm_password) &&
+          req.body.password != req.body.confirm_password
+        ) {
+          // Send response to client
+          res.status(401).send({
+            status: false,
+            message: 'Password and Confirm Password not same',
+          });
+        }
+
+        // Get builder by id
+        const docBuilder = firestoreDB
+          .collection('builders')
+          .doc(req.params.id);
+        const getBuilder = await docBuilder.get();
+
+        // Check builder exists
+        if (!getBuilder.exists) {
+          // Send Response to Client.
+          res
+            .status(401)
+            .send({ status: false, message: 'Builder id not found' });
+        }
+
+        const builderData = getBuilder.data();
+        // Check builder valid
+        if (builderData!.email != req.jwtPayload) {
+          res.status(401).send({ status: false, message: 'Not authorized' });
+        }
+
+        // Get builder hashed password
+        let builderHashPassword = builderData!.password;
+
+        // Compare password
+        const isPasswordValid = await comparePassword(
+          req.body.current_password,
+          builderHashPassword
+        );
+
+        // Check password
+        if (!isPasswordValid) {
+          // Send response to client
+          res
+            .status(401)
+            .send({ status: false, message: 'Password not valid' });
+        }
+
+        // const storage = multer.memoryStorage();
+        // const upload = multer({ storage: storage }).single('file_photo');
+        // res.status(401).send({
+        //   status: false,
+        //   data: upload,
+        //   message: 'Password not dsdsvalid',
+        // });
+
+        const builderUpdate: builder = {
+          full_name: req.body.full_name ?? builderData!.full_name,
+          email: req.body.email ?? builderData!.email,
+          password: req.body.password
+            ? await hashPassword(req.body.password)
+            : builderData!.password,
+        };
+
+        const updateBuilder = await docBuilder.update(builderUpdate);
+        if (!updateBuilder) {
+          // Send log
+          console.log('Update builder failed');
+
+          // Send response to client
+          res
+            .status(500)
+            .send({ status: false, message: 'Update builder failed' });
+        }
+
+        // Generate JWT Token.
+        const jwtToken: string = process.env.JWT_TOKEN_KEY;
+        const token = jwt.sign(builderData!.email, jwtToken);
+        builderData!.id = getBuilder.id;
+        builderData!.token = token;
+        builderData!.password = undefined;
+
+        res.status(200).send({
+          status: true,
+          data: builderData,
+          message: 'Update builder successed',
+        });
+      } catch (error) {
+        console.log(error);
+
+        res
+          .status(500)
+          .send({ status: false, message: 'Update builder failed' });
+      }
+    })();
+  }
+);
+
+// Delete builder
+app.delete('/delete/:id', auth, (req, res) => {
   (async () => {
     try {
-      const reqDoc = firestoreDB.collection('builders').doc(req.params.uuid);
-      const builder = (await reqDoc.get()).data();
+      // Get builder by id
+      const docBuilder = firestoreDB.collection('builders').doc(req.params.id);
+      const getBuilder = await docBuilder.get();
 
-      if (builder!.email != req.jwtPayload) {
-        return res.status(401).send({ status: false, msg: 'Not authorized.' });
+      // Check builder exists
+      if (!getBuilder.exists) {
+        // Send Response to Client.
+        res
+          .status(401)
+          .send({ status: false, message: 'Builder id not found' });
       }
 
-      const builderUpdate: builder = {
-        full_name: req.body.full_name ?? builder!.full_name,
-        password: req.body.password
-          ? await hashPassword(req.body.password)
-          : builder!.password,
-      };
-
-      await reqDoc.update(builderUpdate);
-
-      return res.status(200).send({ status: true, msg: 'Update successed.' });
-    } catch (error) {
-      console.log(error);
-
-      return res.status(500).send({ status: false, msg: 'Update failed.' });
-    }
-  })();
-});
-
-// Delete Builder
-app.delete('/builders/delete/:uuid', authWare, (req, res) => {
-  (async () => {
-    try {
-      const reqDoc = firestoreDB.collection('builders').doc(req.params.uuid);
-      const builderEmail = (await reqDoc.get()).data()!.email;
-
-      if (builderEmail != req.jwtPayload) {
-        return res.status(401).send({ status: false, msg: 'Not authorized.' });
+      const builderData = getBuilder.data();
+      // Check builder valid
+      if (builderData!.email != req.jwtPayload) {
+        res.status(401).send({ status: false, message: 'Not authorized' });
       }
 
-      await reqDoc.delete();
+      const deleteBuilder = await docBuilder.delete();
+      if (!deleteBuilder) {
+        // Send log
+        console.log('Delete builder failed');
 
-      return res.status(200).send({ status: true, msg: 'Delete successed.' });
+        // Send response to client
+        res
+          .status(500)
+          .send({ status: false, message: 'Delete builder failed' });
+      }
+
+      // Send response to client
+      res
+        .status(200)
+        .send({ status: true, message: 'Delete builder successed' });
     } catch (error) {
+      // Send log
       console.log(error);
 
-      return res.status(500).send({ status: false, msg: 'Delete failed.' });
+      // Send response to client
+      res.status(500).send({ status: false, message: 'Delete builder failed' });
     }
   })();
 });

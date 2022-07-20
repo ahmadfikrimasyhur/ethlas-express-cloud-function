@@ -24,3 +24,10 @@ export async function comparePassword(plaintextPassword: string, hash: string) {
 
   return result;
 }
+
+export function humanDate(unixtime: EpochTimeStamp | undefined) {
+  const newDate = new Date();
+  newDate.setTime(unixtime ?? Date.now());
+
+  return newDate.toDateString();
+}

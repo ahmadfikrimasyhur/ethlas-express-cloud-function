@@ -25,6 +25,11 @@ export async function comparePassword(plaintextPassword: string, hash: string) {
   return result;
 }
 
+/**
+ *
+ * @param {EpochTimeStamp | undefined} unixtime
+ * @return {string}
+ */
 export function humanDate(unixtime: EpochTimeStamp | undefined) {
   const newDate = new Date();
   newDate.setTime(unixtime ?? Date.now());

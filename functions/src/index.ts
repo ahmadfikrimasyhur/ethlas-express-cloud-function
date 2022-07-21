@@ -108,7 +108,7 @@ app.post('/login', (req, res) => {
       const getBuilderData = getBuilderDoc!.data();
 
       // Get builder hashed password
-      let builderHashPassword = getBuilderData!.password;
+      const builderHashPassword = getBuilderData!.password;
 
       // Compare password
       const isPasswordValid = await comparePassword(
@@ -231,125 +231,100 @@ app.get('/list', (req, res) => {
 });
 
 // Update builder
-app.post(
-  '/update/:id',
-  [auth /*, multer().single('file_photo')*/],
-  (req: any, res: any) => {
-    (async () => {
-      try {
-        // console.log(req.body);
-        // console.log(req.file);
-        // res.status(401).send({
-        //   status: false,
-        //   data: req.body,
-        //   message: 'Current Password can`t be empty',
-        // });
-        // Check password
-        if (!req.body.current_password) {
-          // Send response to client
-          res.status(401).send({
-            status: false,
-            message: 'Current Password can`t be empty',
-          });
-        }
-
-        if (
-          (req.body.password || req.body.confirm_password) &&
-          req.body.password != req.body.confirm_password
-        ) {
-          // Send response to client
-          res.status(401).send({
-            status: false,
-            message: 'Password and Confirm Password not same',
-          });
-        }
-
-        // Get builder by id
-        const docBuilder = firestoreDB
-          .collection('builders')
-          .doc(req.params.id);
-        const getBuilder = await docBuilder.get();
-
-        // Check builder exists
-        if (!getBuilder.exists) {
-          // Send Response to Client.
-          res
-            .status(401)
-            .send({ status: false, message: 'Builder id not found' });
-        }
-
-        const builderData = getBuilder.data();
-        // Check builder valid
-        if (builderData!.email != req.jwtPayload) {
-          res.status(401).send({ status: false, message: 'Not authorized' });
-        }
-
-        // Get builder hashed password
-        let builderHashPassword = builderData!.password;
-
-        // Compare password
-        const isPasswordValid = await comparePassword(
-          req.body.current_password,
-          builderHashPassword
-        );
-
-        // Check password
-        if (!isPasswordValid) {
-          // Send response to client
-          res
-            .status(401)
-            .send({ status: false, message: 'Password not valid' });
-        }
-
-        // const storage = multer.memoryStorage();
-        // const upload = multer({ storage: storage }).single('file_photo');
-        // res.status(401).send({
-        //   status: false,
-        //   data: upload,
-        //   message: 'Password not dsdsvalid',
-        // });
-
-        const builderUpdate: builder = {
-          full_name: req.body.full_name ?? builderData!.full_name,
-          email: req.body.email ?? builderData!.email,
-          password: req.body.password
-            ? await hashPassword(req.body.password)
-            : builderData!.password,
-        };
-
-        const updateBuilder = await docBuilder.update(builderUpdate);
-        if (!updateBuilder) {
-          // Send log
-          console.log('Update builder failed');
-
-          // Send response to client
-          res
-            .status(500)
-            .send({ status: false, message: 'Update builder failed' });
-        }
-
-        // Generate JWT Token.
-        const jwtToken: string = process.env.JWT_TOKEN_KEY;
-        const token = jwt.sign(builderData!.email, jwtToken);
-        builderData!.id = getBuilder.id;
-        builderData!.token = token;
-        builderData!.password = undefined;
-
-        res.status(200).send({
-          status: true,
-          data: builderData,
-          message: 'Update builder successed',
+app.post('/update/:id', auth, (req: any, res: any) => {
+  (async () => {
+    try {
+      // Check password
+      if (!req.body.current_password) {
+        // Send response to client
+        res.status(401).send({
+          status: false,
+          message: 'Current Password can`t be empty',
         });
-      } catch (error) {
-        console.log(error);
+      }
 
+      if (
+        (req.body.password || req.body.confirm_password) &&
+        req.body.password != req.body.confirm_password
+      ) {
+        // Send response to client
+        res.status(401).send({
+          status: false,
+          message: 'Password and Confirm Password not same',
+        });
+      }
+
+      // Get builder by id
+      const docBuilder = firestoreDB.collection('builders').doc(req.params.id);
+      const getBuilder = await docBuilder.get();
+
+      // Check builder exists
+      if (!getBuilder.exists) {
+        // Send Response to Client.
+        res
+          .status(401)
+          .send({ status: false, message: 'Builder id not found' });
+      }
+
+      const builderData = getBuilder.data();
+      // Check builder valid
+      if (builderData!.email != req.jwtPayload) {
+        res.status(401).send({ status: false, message: 'Not authorized' });
+      }
+
+      // Get builder hashed password
+      const builderHashPassword = builderData!.password;
+
+      // Compare password
+      const isPasswordValid = await comparePassword(
+        req.body.current_password,
+        builderHashPassword
+      );
+
+      // Check password
+      if (!isPasswordValid) {
+        // Send response to client
+        res.status(401).send({ status: false, message: 'Password not valid' });
+      }
+
+      const builderUpdate: builder = {
+        full_name: req.body.full_name ?? builderData!.full_name,
+        email: req.body.email ?? builderData!.email,
+        password: req.body.password
+          ? await hashPassword(req.body.password)
+          : builderData!.password,
+      };
+
+      const updateBuilder = await docBuilder.update(builderUpdate);
+      if (!updateBuilder) {
+        // Send log
+        console.log('Update builder failed');
+
+        // Send response to client
         res
           .status(500)
           .send({ status: false, message: 'Update builder failed' });
       }
-    })();
-  }
-);
+
+      // Generate JWT Token.
+      const jwtToken: string = process.env.JWT_TOKEN_KEY;
+      const token = jwt.sign(builderData!.email, jwtToken);
+      builderData!.id = getBuilder.id;
+      builderData!.token = token;
+      builderData!.password = undefined;
+
+      res.status(200).send({
+        status: true,
+        data: builderData,
+        message: 'Update builder successed',
+      });
+    } catch (error) {
+      console.log(error);
+
+      res.status(500).send({ status: false, message: 'Update builder failed' });
+    }
+  })();
+});
 
 // Delete builder
 app.delete('/delete/:id', auth, (req, res) => {
